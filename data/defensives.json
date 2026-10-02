@@ -1,0 +1,90 @@
+{
+  "_comment": "Personal defensives per class, matched by spell NAME against cast events. cd = cooldown in seconds (approximate, edit freely). baseline = every player of that class/spec has it; anything else only counts once the player has been seen casting it in the current report. specs = optional list limiting it to those specs (as WCL names them, e.g. 'Arms'). 'externals' are only used to say what was active at the killing blow.",
+  "classes": {
+    "DeathKnight": [
+      { "name": "Anti-Magic Shell", "cd": 60, "baseline": true },
+      { "name": "Icebound Fortitude", "cd": 180, "baseline": true },
+      { "name": "Lichborne", "cd": 120 },
+      { "name": "Death Pact", "cd": 120 },
+      { "name": "Vampiric Blood", "cd": 90, "specs": ["Blood"] }
+    ],
+    "DemonHunter": [
+      { "name": "Blur", "cd": 60, "baseline": true, "specs": ["Havoc"] },
+      { "name": "Netherwalk", "cd": 180 },
+      { "name": "Fiery Brand", "cd": 60, "specs": ["Vengeance"] },
+      { "name": "Metamorphosis", "cd": 180, "specs": ["Vengeance"] }
+    ],
+    "Druid": [
+      { "name": "Barkskin", "cd": 60, "baseline": true },
+      { "name": "Survival Instincts", "cd": 180, "specs": ["Guardian", "Feral"] },
+      { "name": "Frenzied Regeneration", "cd": 36 },
+      { "name": "Renewal", "cd": 90 }
+    ],
+    "Evoker": [
+      { "name": "Obsidian Scales", "cd": 90, "baseline": true },
+      { "name": "Renewing Blaze", "cd": 90 }
+    ],
+    "Hunter": [
+      { "name": "Aspect of the Turtle", "cd": 180, "baseline": true },
+      { "name": "Exhilaration", "cd": 120, "baseline": true },
+      { "name": "Survival of the Fittest", "cd": 90 }
+    ],
+    "Mage": [
+      { "name": "Ice Block", "cd": 240 },
+      { "name": "Ice Cold", "cd": 240 },
+      { "name": "Alter Time", "cd": 50 },
+      { "name": "Mirror Image", "cd": 120 },
+      { "name": "Greater Invisibility", "cd": 120 },
+      { "name": "Ice Barrier", "cd": 25, "specs": ["Frost"] },
+      { "name": "Blazing Barrier", "cd": 25, "specs": ["Fire"] },
+      { "name": "Prismatic Barrier", "cd": 25, "specs": ["Arcane"] }
+    ],
+    "Monk": [
+      { "name": "Fortifying Brew", "cd": 120 },
+      { "name": "Diffuse Magic", "cd": 90 },
+      { "name": "Dampen Harm", "cd": 120 },
+      { "name": "Touch of Karma", "cd": 90, "specs": ["Windwalker"] }
+    ],
+    "Paladin": [
+      { "name": "Divine Shield", "cd": 300, "baseline": true },
+      { "name": "Divine Protection", "cd": 60, "specs": ["Holy", "Retribution"] },
+      { "name": "Shield of Vengeance", "cd": 90, "specs": ["Retribution"] },
+      { "name": "Lay on Hands", "cd": 600 },
+      { "name": "Ardent Defender", "cd": 120, "specs": ["Protection"] },
+      { "name": "Guardian of Ancient Kings", "cd": 300, "specs": ["Protection"] }
+    ],
+    "Priest": [
+      { "name": "Desperate Prayer", "cd": 90, "baseline": true },
+      { "name": "Dispersion", "cd": 120, "specs": ["Shadow"] },
+      { "name": "Vampiric Embrace", "cd": 120, "specs": ["Shadow"] }
+    ],
+    "Rogue": [
+      { "name": "Cloak of Shadows", "cd": 120, "baseline": true },
+      { "name": "Evasion", "cd": 120, "baseline": true },
+      { "name": "Feint", "cd": 15, "baseline": true },
+      { "name": "Crimson Vial", "cd": 30, "baseline": true }
+    ],
+    "Shaman": [
+      { "name": "Astral Shift", "cd": 120, "baseline": true },
+      { "name": "Stone Bulwark Totem", "cd": 180 },
+      { "name": "Earth Elemental", "cd": 300 }
+    ],
+    "Warlock": [
+      { "name": "Unending Resolve", "cd": 180, "baseline": true },
+      { "name": "Dark Pact", "cd": 60 }
+    ],
+    "Warrior": [
+      { "name": "Die by the Sword", "cd": 120, "specs": ["Arms"] },
+      { "name": "Enraged Regeneration", "cd": 120, "specs": ["Fury"] },
+      { "name": "Shield Wall", "cd": 180, "specs": ["Protection"] },
+      { "name": "Rallying Cry", "cd": 180 }
+    ]
+  },
+  "healthstone": "Healthstone",
+  "externals": [
+    "Pain Suppression", "Guardian Spirit", "Power Word: Barrier", "Ironbark",
+    "Blessing of Protection", "Blessing of Sacrifice", "Blessing of Spellwarding",
+    "Life Cocoon", "Time Dilation", "Spirit Link Totem", "Anti-Magic Zone",
+    "Rallying Cry", "Darkness", "Aura Mastery"
+  ]
+}
