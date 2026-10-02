@@ -22,7 +22,7 @@ def save_review(code, lines):
 class ReportRun(threading.Thread):
     """Reviews every boss pull of a report (finished or still being logged),
     then builds the evening summary. on_pull(PullResult) gets each pull in
-    order, on_summary(list[Line]) the summary, on_status(str) progress, and
+    order, on_summary(Summary) the summary, on_status(str) progress, and
     on_stopped(error | None) fires once at the end."""
 
     def __init__(self, code, on_pull, on_summary, on_status, on_stopped, *, include_kills=True, detail_deaths=8):
@@ -47,7 +47,7 @@ class ReportRun(threading.Thread):
                 on_result=self.on_pull, should_stop=self._stop_event.is_set)
             if not self._stop_event.is_set():
                 summary = analysis.summarize_report(report, results, self.include_kills, self.detail_deaths)
-                save_review(self.code, summary + [l for r in results for l in r.lines])
+                save_review(self.code, summary.lines() + [l for r in results for l in r.lines])
                 self.on_summary(summary)
         except Exception as e:
             error = str(e)

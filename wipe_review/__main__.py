@@ -54,7 +54,7 @@ def main():
         progress = lambda done, total, f: print(f"\r  reviewed {done}/{total} pulls", end="", file=sys.stderr, flush=True)
         report, results = analysis.analyze_report(client, code, include_kills, a.detail, on_progress=progress)
         print(file=sys.stderr)
-        show(analysis.summarize_report(report, results, include_kills, a.detail), color)
+        show(analysis.summarize_report(report, results, include_kills, a.detail).lines(), color)
         for r in results:
             show(r.lines, color)
     else:

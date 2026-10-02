@@ -38,7 +38,9 @@ RED_HOVER = "#c03537"
 
 DEATH_LINE = re.compile(r"^(\d+:\d\d)\s+(.+?)( - killed by .*)$")
 
-TAG_COLORS = {"normal": TEXT, "dim": MUTED, "info": WHITE, "header": WHITE, "kill": WHITE, "warn": YELLOW, "bad": RED}
+TAG_COLORS = {"normal": TEXT, "dim": MUTED, "info": WHITE, "header": WHITE, "kill": WHITE, "warn": YELLOW, "bad": RED, "good": GREEN}
+ROW_A = "#232428"       # table rows (alternating)
+ROW_B = "#2b2d31"
 STATE_COLORS = {"idle": MUTED, "busy": YELLOW, "live": GREEN, "error": RED}
 
 
@@ -110,6 +112,59 @@ class FlowFrame(tk.Frame):
             col, x = col + 1, x + w_width
 
 
+class SortTable(tk.Frame):
+    """A striped table (analysis.Table) whose column headers sort it when
+    clicked - the first click sorts numbers high-to-low and text A-Z, the
+    next click reverses."""
+
+    def __init__(self, master, table, font, font_bold):
+        super().__init__(master, bg=BG_DARKER)
+        self.table, self.font, self.font_bold = table, font, font_bold
+        self.rows = list(table.rows)
+        self.sort_col, self.sort_desc = None, False
+        self.cells = []
+        for i in range(len(table.columns)):
+            self.grid_columnconfigure(i, weight=1 if i == 0 else 0, minsize=0 if i == 0 else 64)
+        self.headers = []
+        for i, name in enumerate(table.columns):
+            h = tk.Label(self, text=name, bg=BG_DARKER, fg=MUTED, font=font_bold, padx=8, pady=4, cursor="hand2",
+                         anchor="w" if i == 0 else "center")
+            h.grid(row=0, column=i, sticky="nsew")
+            h.bind("<Button-1>", lambda _e, i=i: self.sort(i))
+            h.bind("<Enter>", lambda _e, h=h: h.configure(fg=WHITE))
+            h.bind("<Leave>", lambda _e, h=h: h.configure(fg=MUTED))
+            self.headers.append(h)
+        self._draw()
+
+    def sort(self, col):
+        if self.sort_col == col:
+            self.sort_desc = not self.sort_desc
+        else:
+            sample = next((r[col].sort for r in self.rows if r[col].sort is not None), None)
+            self.sort_col, self.sort_desc = col, isinstance(sample, (int, float))
+
+        def key(r):
+            v = r[col].sort if r[col].sort is not None else r[col].text
+            return (0, v) if isinstance(v, (int, float)) else (1, str(v).lower())
+        self.rows.sort(key=key, reverse=self.sort_desc)
+        for i, h in enumerate(self.headers):
+            arrow = (" \u25bc" if self.sort_desc else " \u25b2") if i == col else ""
+            h.configure(text=self.table.columns[i] + arrow)
+        self._draw()
+
+    def _draw(self):
+        for w in self.cells:
+            w.destroy()
+        self.cells = []
+        for r, row in enumerate(self.rows, 1):
+            bg = ROW_A if r % 2 else ROW_B
+            for c, cell in enumerate(row):
+                lbl = tk.Label(self, text=cell.text, bg=bg, fg=TAG_COLORS.get(cell.tag, TEXT), font=self.font,
+                               padx=8, pady=3, anchor="w" if c == 0 else "center")
+                lbl.grid(row=r, column=c, sticky="nsew", pady=(1, 0))
+                self.cells.append(lbl)
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -127,6 +182,9 @@ class App:
         self.font_bold = (self.f_base, 10, "bold")
         self.font_small = (self.f_base, 8)
         self.font_title = (self.f_base, 11, "bold")
+        self.font_table = (self.f_base, 9)
+        self.font_table_bold = (self.f_base, 9, "bold")
+        self.line_px = tkfont.Font(root=root, font=self.font).metrics("linespace")
 
         root.title("Wipe Review")
         root.geometry("760x620")
@@ -282,9 +340,18 @@ class App:
         if width <= 1 or getattr(t, "_fitted_width", None) == width:
             return
         t._fitted_width = width
-        n = t.count("1.0", "end-1c", "displaylines")
-        n = n[0] if isinstance(n, tuple) else n
-        t.configure(height=max(1, (n or 0) + 1))
+        # Height is set in lines, but section headings carry extra spacing, so
+        # a line count can clip the bottom. Over-size from the pixel estimate,
+        # then shrink to wherever the last line actually ends.
+        # one "line" of Text height = font linespace + the widget's per-line spacing
+        line = self.line_px + int(t.cget("spacing1")) + int(t.cget("spacing3"))
+        px = t.count("1.0", "end", "ypixels")
+        px = px[0] if isinstance(px, tuple) else px
+        t.configure(height=max(1, -(-(px or 0) // line) + 2))
+        t.update_idletasks()
+        last = t.dlineinfo("end-1c")
+        if last:
+            t.configure(height=max(1, -(-(last[1] + last[3]) // line)))
 
     def _on_wheel(self, e):
         self.canvas.yview_scroll(int(-e.delta / 120), "units")
@@ -320,7 +387,7 @@ class App:
         self._schedule_refit(stick)
         return row
 
-    def card(self, kind, title, stats, lines, collapsed=False, after=None, when=None):
+    def card(self, kind, title, stats, lines=None, collapsed=False, after=None, when=None, build_body=None):
         """A result card: badge, title, stat chips, then the review body.
         Clicking the header folds the body away."""
         stick = self._at_bottom() and after is None
@@ -351,11 +418,14 @@ class App:
 
         body = tk.Frame(inner, bg=BG_DARK)
         tk.Frame(body, bg=INPUT, height=1).pack(fill="x", pady=(4, 6))
-        t = self._rich_text(body, BG_DARK)
-        self._render_review_lines(t, lines)
-        t.configure(state="disabled")
-        t.pack(fill="x")
-        self.texts.append(t)
+        if build_body:
+            build_body(body)
+        else:
+            t = self._rich_text(body, BG_DARK)
+            self._render_review_lines(t, lines)
+            t.configure(state="disabled")
+            t.pack(fill="x")
+            self.texts.append(t)
 
         def set_open(open_):
             arrow.configure(text="\u25be" if open_ else "\u25b8")
@@ -411,6 +481,24 @@ class App:
         kind, _, title = parts[0].partition(" - ")
         return self.card(kind, title, parts[1:], lines[1:], collapsed=collapsed, after=after, when=when)
 
+    def show_summary(self, summary, after=None):
+        """The evening summary: one sortable table per section."""
+        parts = summary.header.text.strip(" =").split(" | ")
+        _, _, title = parts[0].partition(" - ")
+
+        def build(body):
+            for table in summary.tables:
+                tk.Label(body, text=table.title, bg=BG_DARK, fg=WHITE, font=self.font_bold, anchor="w").pack(fill="x", pady=(10, 4))
+                SortTable(body, table, self.font_table, self.font_table_bold).pack(fill="x")
+                if table.note:
+                    note = tk.Label(body, text=table.note, bg=BG_DARK, fg=MUTED, font=self.font_small, anchor="w", justify="left")
+                    note.pack(fill="x", pady=(3, 0))
+                    note.bind("<Configure>", lambda e, n=note: n.configure(wraplength=max(100, e.width - 4)))
+            for note in summary.notes:
+                tk.Label(body, text=note, bg=BG_DARK, fg=MUTED, font=self.font_small, anchor="w").pack(fill="x", pady=(10, 0))
+
+        return self.card("REPORT", title, parts[1:], after=after, when="", build_body=build)
+
     def _scroll_to(self, widget):
         def go():
             self._refit_all()
@@ -441,7 +529,7 @@ class App:
                     self.show_review(payload.lines, collapsed=True, when=when)
                 elif kind == "summary":
                     anchor = self.report_anchor if self.report_anchor and self.report_anchor.winfo_exists() else None
-                    card = self.show_review(payload, after=anchor, when="")
+                    card = self.show_summary(payload, after=anchor)
                     if card is not None:
                         self._scroll_to(card)
                 elif kind == "status":

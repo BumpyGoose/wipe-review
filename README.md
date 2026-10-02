@@ -48,18 +48,21 @@ uploader in **live** mode. Either way the report must be **public** or
 
 ## The evening summary
 
-**Full report** (or `python -m wipe_review report <url>`) starts with:
+**Full report** (or `python -m wipe_review report <url>`) starts with a summary
+card: totals as chips (date, raid length, time in combat, pulls, kills, wipes,
+deaths), then sortable tables. Click a column header to sort by it, and click
+again to reverse.
 
-- **Totals:** date, raid length, time in combat, pulls, kills, wipes and deaths.
-- **Bosses:** pulls per boss, which pull killed it (or the best wipe %), and
-  time in combat.
-- **What killed people:** the top abilities by deaths, and how many wipes each
-  one started.
-- **How each wipe started:** the first death of every wipe.
-- **Players, most to fix first:** this is ranked by dying first or within the
-  first 3 deaths, dying on a kill, dying with a defensive unpressed, avoidable
-  hits and missed mechanics. Plain death counts don't rank anyone, because
-  every wipe ends with the whole raid dead.
+- **Bosses:** result (kill on pull N, or the best wipe %), pulls, wipes, best
+  wipe, time in combat, and when the last pull was.
+- **What killed people:** deaths per ability, how many wipes each one started,
+  and how many players it killed.
+- **How each wipe started:** the pull, boss %, length, first death, what killed
+  them, and when.
+- **Players, most to fix first:** every player, with a score built from dying
+  first or within the first 3 deaths, dying on a kill, dying with a defensive
+  ready, avoidable hits and missed mechanics. Plain death counts don't rank
+  anyone, because every wipe ends with the whole raid dead.
 - **Defensives most often left unpressed.**
 
 Options are under the gear button next to Start:
