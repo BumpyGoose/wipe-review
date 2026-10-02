@@ -127,6 +127,9 @@ python -m wipe_review discover <report url> 44,46,47    # list a boss's ability/
 - `wipe_review/watcher.py`: the background threads for Watch live and Full
   report.
 - `data/`: defensives and boss rules.
+- `assets/`: the app icon (`icon.png`, multi-size `icon.ico`). It's drawn by
+  `tools/make_icon.py` (standard library only), so run that script again after
+  changing the design.
 
 The API allows 3,600 points per hour. A poll costs very little, and each
 review is 2-3 batched queries.

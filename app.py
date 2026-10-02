@@ -18,6 +18,8 @@ from wipe_review import analysis, wcl
 from wipe_review.watcher import LiveWatcher, ReportRun
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "settings.local.json"
+ICON_ICO = Path(__file__).resolve().parent / "assets" / "icon.ico"
+ICON_PNG = Path(__file__).resolve().parent / "assets" / "icon.png"
 PLACEHOLDER = "https://www.warcraftlogs.com/reports/..."
 
 # Colour palette (Discord's dark scheme)
@@ -627,13 +629,28 @@ class App:
         self.root.destroy()
 
 
+def set_icon(root):
+    """Window/taskbar icon from assets/ (regenerate with tools/make_icon.py)."""
+    try:
+        if ICON_ICO.exists():
+            root.iconbitmap(default=str(ICON_ICO))  # Windows: crisp small sizes
+        if ICON_PNG.exists():
+            root._icon = tk.PhotoImage(file=str(ICON_PNG))  # keep a reference or Tk drops it
+            root.iconphoto(True, root._icon)
+    except tk.TclError:
+        pass
+
+
 def main():
-    try:  # crisp text on high-DPI Windows displays
+    try:
         import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on high-DPI displays
+        # Own taskbar identity, so Windows shows our icon instead of grouping under python.exe.
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WipeReview.App")
     except Exception:
         pass
     root = tk.Tk()
+    set_icon(root)
     App(root)
     root.mainloop()
 
