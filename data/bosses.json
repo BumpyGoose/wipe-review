@@ -1,0 +1,21 @@
+{
+  "_comment": "Per-encounter rules, keyed by WCL encounter ID. Re-read on every pull, so edits apply to the next wipe without restarting. Run Start-WipeReview.ps1 -Discover to list a boss's ability/debuff/cast IDs. avoidable: damage nobody should take. debuffs: when a player gets debuff 'id' they must cast one of 'press' (spell IDs, e.g. an extra action button) within 'within' seconds, and/or the debuff must be gone within 'removedWithin' seconds (dispels, cleanses, soaks). interrupts: enemy casts that should never finish. Example entries are in _example.",
+  "_example": {
+    "name": "Example Boss",
+    "avoidable": [ { "id": 1234567, "name": "Swirly Pool", "note": "move out" } ],
+    "debuffs": [
+      { "id": 2345678, "name": "Volatile Bomb", "press": [3456789], "pressLabel": "the extra action button", "within": 6, "note": "run out and press it" },
+      { "id": 4567890, "name": "Creeping Rot", "removedWithin": 4, "note": "healers dispel" }
+    ],
+    "interrupts": [ { "id": 5678901, "name": "Shadow Bolt Volley" } ]
+  },
+  "3470": { "name": "Nek'zali the Soulcoiler", "avoidable": [], "debuffs": [], "interrupts": [] },
+  "3445": { "name": "Entombed Sentinels", "avoidable": [], "debuffs": [], "interrupts": [] },
+  "3455": { "name": "Vashnik the Malignant", "avoidable": [], "debuffs": [], "interrupts": [] },
+  "3497": { "name": "The Lost Explorers", "avoidable": [], "debuffs": [], "interrupts": [] },
+  "3420": { "name": "Sszorak", "avoidable": [], "debuffs": [], "interrupts": [] },
+  "3421": { "name": "The Twin Fangs", "avoidable": [], "debuffs": [], "interrupts": [] },
+  "3429": { "name": "The Coiled Altar", "avoidable": [], "debuffs": [], "interrupts": [] },
+  "3492": { "name": "Ula'tek", "avoidable": [], "debuffs": [], "interrupts": [] },
+  "3379": { "name": "Nymrissa Wavecaller", "avoidable": [], "debuffs": [], "interrupts": [] }
+}
