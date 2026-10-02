@@ -1,10 +1,17 @@
 # Wipe Review
 
-A small desktop app (dark theme using Discord's colour palette). Paste the URL
-of the Warcraft Logs report your raid is live-logging into the **Live log**
-field, press **Start**, and a few seconds after each pull ends a result card
-appears (a red WIPE or green KILL badge, stat chips, then the review)
-explaining why people died:
+A small desktop app (dark theme using Discord's colour palette). Paste a
+Warcraft Logs report URL into the **Live log** field, then either:
+
+- **Watch live** while your raid is logging. A few seconds after each pull
+  ends, a result card appears (a red WIPE or green KILL badge, stat chips,
+  then the review) explaining why people died.
+- **Full report**, for any report: an old one, or one still being logged.
+  It reviews every boss pull (several at a time, about 20 seconds for an
+  11-pull night) and puts a summary of the evening at the top, with each
+  pull as a collapsible card below it.
+
+A single pull's review looks like this:
 
 ```
 === WIPE - Ula'tek Heroic pull #1 | 3:50 | boss 42.5% | phase 2 | 27 players ===
@@ -29,20 +36,37 @@ standard library (Tkinter for the window), so there's nothing to install.
 python app.py
 ```
 
-Use `pythonw app.py` if you don't want a console window. On first Start it
+Use `pythonw app.py` if you don't want a console window. On first use it
 asks for a Warcraft Logs API client ID and secret. Create a client at
 https://www.warcraftlogs.com/api/clients/ (any name, redirect URL
 `http://localhost`). The ID and secret are saved to `credentials.local.json`,
 which is gitignored.
 
-Someone in the raid needs to log with the Warcraft Logs uploader in **live**
-mode, to a **public** or **unlisted** report. Private reports aren't visible
-to this kind of API client.
+For **Watch live**, someone in the raid needs to log with the Warcraft Logs
+uploader in **live** mode. Either way the report must be **public** or
+**unlisted**. Private reports aren't visible to this kind of API client.
+
+## The evening summary
+
+**Full report** (or `python -m wipe_review report <url>`) starts with:
+
+- **Totals:** date, raid length, time in combat, pulls, kills, wipes and deaths.
+- **Bosses:** pulls per boss, which pull killed it (or the best wipe %), and
+  time in combat.
+- **What killed people:** the top abilities by deaths, and how many wipes each
+  one started.
+- **How each wipe started:** the first death of every wipe.
+- **Players, most to fix first:** this is ranked by dying first or within the
+  first 3 deaths, dying on a kill, dying with a defensive unpressed, avoidable
+  hits and missed mechanics. Plain death counts don't rank anyone, because
+  every wipe ends with the whole raid dead.
+- **Defensives most often left unpressed.**
 
 Options are under the gear button next to Start:
-- **Include kills** also reviews deaths on kills.
-- **Review pulls already in the log** reviews pulls that finished before you
-  pressed Start. Without it, only new pulls are reviewed.
+- **Include kills** also reviews deaths on kills. This applies to both modes, and
+  it's worth turning on for a Full report.
+- **Review pulls already in the log** makes Watch live also review pulls that
+  finished before you started. Without it, only new pulls are reviewed.
 - **Keep window on top** keeps it above the game (run WoW in windowed or
   borderless mode).
 - **Detailed deaths per pull** sets how many deaths get the full breakdown.
@@ -61,6 +85,7 @@ moved for 20s. Every review is also appended to `reviews/<report code>.txt`.
 ```
 python -m wipe_review review   <report url> 46          # one or more pulls: 44,46,47
 python -m wipe_review replay   <report url> [--kills]   # every pull in a report
+python -m wipe_review report   <report url>             # evening summary, then every pull (--wipes-only to skip kills)
 python -m wipe_review discover <report url> 44,46,47    # list a boss's ability/debuff/cast IDs
 ```
 
@@ -94,8 +119,10 @@ python -m wipe_review discover <report url> 44,46,47    # list a boss's ability/
 
 - `app.py`: the Tkinter window.
 - `wipe_review/wcl.py`: Warcraft Logs auth, GraphQL, and batched event fetching.
-- `wipe_review/analysis.py`: pull review and discover.
-- `wipe_review/watcher.py`: the background thread that polls a live report.
+- `wipe_review/analysis.py`: pull review, whole-report analysis, the evening
+  summary, and discover.
+- `wipe_review/watcher.py`: the background threads for Watch live and Full
+  report.
 - `data/`: defensives and boss rules.
 
 The API allows 3,600 points per hour. A poll costs very little, and each

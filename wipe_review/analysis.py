@@ -9,6 +9,7 @@ Output is a list of Line(text, tag); the tag drives the colour in the UI
 import json
 import re
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,6 +42,11 @@ def fmt_time(ms):
     return f"{s // 60}:{s % 60:02d}"
 
 
+def fmt_duration(ms):
+    m = int(ms // 60000)
+    return f"{m // 60}h {m % 60:02d}m" if m >= 60 else fmt_time(ms)
+
+
 def fmt_amount(n):
     n = float(n or 0)
     if n >= 1e6:
@@ -58,7 +64,7 @@ def get_report_fights(client, code):
 query($code: String!) {
   reportData { report(code: $code) {
     title startTime endTime
-    fights(killType: Encounters) { id encounterID name kill difficulty startTime endTime fightPercentage lastPhase }
+    fights(killType: Encounters) { id encounterID name kill difficulty startTime endTime fightPercentage bossPercentage lastPhase }
   } }
   rateLimitData { limitPerHour pointsSpentThisHour }
 }"""
@@ -85,6 +91,7 @@ class PullContext:
     abilities: dict
     pull_number: int
     players: list = field(default_factory=list)
+    report_start: int = 0
 
     def ability(self, gid):
         return self.abilities.get(int(gid or 0)) or f"spell {gid}"
@@ -97,6 +104,7 @@ class PullContext:
 def get_pull_context(client, code, fight_id):
     q = """
 query($code: String!, $fid: [Int]) { reportData { report(code: $code) {
+  startTime
   fights(fightIDs: $fid) { id encounterID name kill difficulty startTime endTime fightPercentage bossPercentage lastPhase friendlyPlayers }
   all: fights(killType: Encounters) { id encounterID difficulty }
   masterData { actors(type: "Player") { id name server subType icon } abilities { gameID name } }
@@ -110,7 +118,7 @@ query($code: String!, $fid: [Int]) { reportData { report(code: $code) {
     pull_number = sum(1 for f in report["all"]
                       if f["encounterID"] == fight["encounterID"] and f["difficulty"] == fight["difficulty"] and f["id"] <= fight["id"])
     players = [actors[p] for p in fight.get("friendlyPlayers") or [] if p in actors]
-    return PullContext(code, fight, actors, abilities, pull_number, players)
+    return PullContext(code, fight, actors, abilities, pull_number, players, report.get("startTime") or 0)
 
 
 def spec_of(actor):
@@ -204,7 +212,7 @@ def death_detail(ctx, death, ev, rules, raid_has_warlock, defs):
 
     # Defensives ready but not pressed. Talented ones only count once the
     # player has been seen casting them somewhere in the report.
-    ready = []
+    ready, ready_names = [], []
     for d in my_defs:
         if d["name"] in up:
             continue
@@ -214,12 +222,15 @@ def death_detail(ctx, death, ev, rules, raid_has_warlock, defs):
         in_pull = sorted(c["timestamp"] for c in mine if start <= c["timestamp"] <= t)
         if not in_pull:
             ready.append(f"{d['name']} (not used this pull)")
+            ready_names.append(d["name"])
         elif (t - in_pull[-1]) / 1000 >= d["cd"]:
             ready.append(f"{d['name']} (last used {(t - in_pull[-1]) / 1000:.0f}s ago)")
+            ready_names.append(d["name"])
     if raid_has_warlock and not one_shot:
         stone = defs.get("healthstone", "Healthstone")
         if not any(ctx.ability(c["abilityGameID"]) == stone and start <= c["timestamp"] <= t for c in casts):
             ready.append(stone)
+            ready_names.append(stone)
     if ready:
         verb = "had ready (would need pre-using - it was a one-shot)" if one_shot else "didn't press"
         lines.append(Line(f"        ! {verb}: " + ", ".join(ready), "warn"))
@@ -233,10 +244,27 @@ def death_detail(ctx, death, ev, rules, raid_has_warlock, defs):
     if avoid_totals:
         lines.append(Line("        ! avoidable damage before death: " +
                           ", ".join(f"{ctx.ability(g)} ({fmt_amount(v)})" for g, v in avoid_totals.items()), "bad"))
-    return lines
+    return lines, {"ready": ready_names, "one_shot": one_shot}
+
+
+@dataclass
+class PullResult:
+    """One reviewed pull: the text review plus the numbers the evening summary needs."""
+    fight: dict
+    pull_number: int
+    lines: list
+    deaths: list = field(default_factory=list)       # {"player", "ability", "t"} in order, t = ms into the pull
+    unpressed: dict = field(default_factory=dict)    # player -> [defensive names] (non-one-shot detailed deaths)
+    avoidable: dict = field(default_factory=dict)    # player -> {"hits", "amount"}
+    mech_fails: Counter = field(default_factory=Counter)  # player -> missed mechanic count
+    started_at: int = 0                                   # epoch ms the pull started
 
 
 def review_pull(client, code, fight_id, detail_deaths=8):
+    return analyze_pull(client, code, fight_id, detail_deaths).lines
+
+
+def analyze_pull(client, code, fight_id, detail_deaths=8):
     ctx = get_pull_context(client, code, fight_id)
     f = ctx.fight
     start, end = f["startTime"], f["endTime"]
@@ -271,7 +299,11 @@ def review_pull(client, code, fight_id, detail_deaths=8):
     phase = f" | phase {f['lastPhase']}" if f.get("lastPhase") else ""
     out.append(Line(""))
     out.append(Line(f"=== {result} - {f['name']} {DIFFICULTY.get(f['difficulty'], '')} pull #{ctx.pull_number} | "
-                    f"{fmt_time(end - start)}{pct}{phase} | {len(player_ids)} players ===", "kill" if f.get("kill") else "header"))
+                    f"{fmt_time(end - start)}{pct}{phase} | {len(player_ids)} players | {len(deaths)} death{"s" if len(deaths) != 1 else ""} ===",
+                    "kill" if f.get("kill") else "header"))
+    res = PullResult(f, ctx.pull_number, out, started_at=ctx.report_start + start,
+                     deaths=[{"player": ctx.name(d["targetID"]), "ability": ctx.ability(d.get("killingAbilityGameID")),
+                              "t": d["timestamp"] - start} for d in deaths])
 
     if not deaths:
         out.append(Line("  No player deaths."))
@@ -314,7 +346,10 @@ def review_pull(client, code, fight_id, detail_deaths=8):
         out.append(Line(""))
         out.append(Line("  Deaths:", "info"))
         for d in detailed:
-            out += death_detail(ctx, d, detail_ev, rules, raid_has_warlock, defs)
+            dl, info = death_detail(ctx, d, detail_ev, rules, raid_has_warlock, defs)
+            out += dl
+            if info["ready"] and not info["one_shot"]:
+                res.unpressed[ctx.name(d["targetID"])] = info["ready"]
         rest = deaths[detail_deaths:]
         if rest:
             out.append(Line(f"  ...then {len(rest)} more: " + ", ".join(
@@ -329,6 +364,9 @@ def review_pull(client, code, fight_id, detail_deaths=8):
         per_player = defaultdict(lambda: defaultdict(list))
         for e in avoid:
             per_player[e["targetID"]][e["abilityGameID"]].append(e.get("amount", 0))
+            a = res.avoidable.setdefault(ctx.name(e["targetID"]), {"hits": 0, "amount": 0})
+            a["hits"] += 1
+            a["amount"] += e.get("amount", 0)
         for pid, abil in sorted(per_player.items(), key=lambda kv: -sum(sum(v) for v in kv[1].values())):
             parts = [f"{ctx.ability(g)} x{len(v)} ({fmt_amount(sum(v))})" for g, v in abil.items()]
             out.append(Line(f"    {ctx.name(pid):<14} {', '.join(parts)}", "bad"))
@@ -354,6 +392,7 @@ def review_pull(client, code, fight_id, detail_deaths=8):
                     failed = f"wasn't cleared within {r['removedWithin']}s"
             if failed:
                 died = next((d for d in deaths if d["targetID"] == who and at <= d["timestamp"] <= at + 15000), None)
+                res.mech_fails[ctx.name(who)] += 1
                 fails.append({"at": at, "name": ctx.name(who), "failed": failed,
                               "died_after": (died["timestamp"] - at) / 1000 if died else None})
         # Failures within 2s of each other are one cast of the mechanic; 5+
@@ -386,6 +425,165 @@ def review_pull(client, code, fight_id, detail_deaths=8):
         out.append(Line(""))
         out.append(Line(f"  (No rules for encounter {f['encounterID']} yet - run discover on a pull to list its abilities, "
                         "then add them to data/bosses.json.)", "dim"))
+    return res
+
+
+# ---------------------------------------------------------------------------
+# Whole report: every pull, then an evening summary
+# ---------------------------------------------------------------------------
+def analyze_report(client, code, include_kills=True, detail_deaths=8, on_progress=None, on_result=None,
+                   should_stop=None, workers=4):
+    """Reviews every boss pull in a report (a few at a time). on_result gets
+    each PullResult in pull order as soon as it and all earlier ones are done.
+    Returns (report, [PullResult])."""
+    report = get_report_fights(client, code)
+    fights = [f for f in report.get("fights") or [] if is_reviewable(f, include_kills)]
+    results, ready, next_i = {}, {}, 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(analyze_pull, client, code, f["id"], detail_deaths): i for i, f in enumerate(fights)}
+        for done_count, fut in enumerate(as_completed(futures), 1):
+            if should_stop and should_stop():
+                for other in futures:
+                    other.cancel()
+                break
+            i = futures[fut]
+            try:
+                ready[i] = fut.result()
+            except Exception as e:  # one bad pull shouldn't sink the whole report
+                f = fights[i]
+                ready[i] = PullResult(f, 0, [Line(f"=== WIPE - {f['name']} (fight {f['id']}) | review failed ==="),
+                                             Line(f"  {e}", "bad")])
+            if on_progress:
+                on_progress(done_count, len(fights), fights[i])
+            while next_i in ready:
+                results[next_i] = ready.pop(next_i)
+                if on_result:
+                    on_result(results[next_i])
+                next_i += 1
+    return report, [results[i] for i in sorted(results)]
+
+
+def summarize_report(report, results, include_kills=True, detail_deaths=8):
+    """The evening at a glance: bosses, what killed people, who died first,
+    who left defensives unpressed, avoidable damage and missed mechanics."""
+    from datetime import datetime  # local: only the summary needs it
+
+    boss_fights = [f for f in report.get("fights") or [] if f.get("encounterID", 0) > 0 and f.get("difficulty", 99) <= 5]
+    kills = sum(1 for f in boss_fights if f.get("kill"))
+    total_deaths = sum(len(r.deaths) for r in results)
+    combat_ms = sum(f["endTime"] - f["startTime"] for f in boss_fights)
+    span_ms = (boss_fights[-1]["endTime"] - boss_fights[0]["startTime"]) if boss_fights else 0
+    date = datetime.fromtimestamp(report["startTime"] / 1000).strftime("%a %d %b %Y") if report.get("startTime") else ""
+    out = [Line(f"=== REPORT - {report.get('title') or 'Report'} | {date} | {fmt_duration(span_ms)} raid | "
+                f"{fmt_duration(combat_ms)} in combat | {len(boss_fights)} pulls | {kills} kills | "
+                f"{len(boss_fights) - kills} wipes | {total_deaths} deaths ===", "header")]
+    if not boss_fights:
+        out.append(Line("  No boss pulls in this report."))
+        return out
+
+    # --- bosses ---------------------------------------------------------------
+    out += [Line(""), Line("  Bosses:", "info")]
+    bosses = {}
+    for f in boss_fights:
+        bosses.setdefault((f["encounterID"], f["difficulty"]), []).append(f)
+    for (_, diff), pulls in bosses.items():
+        name = f"{pulls[0]['name']} {DIFFICULTY.get(diff, '')}"
+        time_in = fmt_time(sum(p["endTime"] - p["startTime"] for p in pulls))
+        kill_at = next((i for i, p in enumerate(pulls, 1) if p.get("kill")), None)
+        wipes = [p for p in pulls if not p.get("kill")]
+        if kill_at:
+            verdict = f"killed on pull {kill_at}"
+            tag = "normal"
+        else:
+            best = min((p.get("bossPercentage") if p.get("bossPercentage") is not None else 100) for p in wipes)
+            verdict = f"not killed, best {best:.1f}%"
+            tag = "warn"
+        out.append(Line(f"    {name} - {len(pulls)} pull{'s' if len(pulls) != 1 else ''}, {verdict}, {time_in} in combat", tag))
+
+    if not results:
+        out.append(Line(""))
+        out.append(Line("  No pulls were reviewed." + ("" if include_kills else " (Only wipes are reviewed - turn on Include kills to count kills too.)"), "dim"))
+        return out
+
+    # --- what killed people ------------------------------------------------------
+    by_ability, started = Counter(), Counter()
+    for r in results:
+        for d in r.deaths:
+            by_ability[d["ability"]] += 1
+        if r.deaths and not r.fight.get("kill"):
+            started[r.deaths[0]["ability"]] += 1
+    out += [Line(""), Line("  What killed people:", "info")]
+    for ability, n in by_ability.most_common(6):
+        first = f", first death of {started[ability]} wipe{'s' if started[ability] != 1 else ''}" if started[ability] else ""
+        out.append(Line(f"    {ability} - {n} death{'s' if n != 1 else ''}{first}"))
+
+    # --- how each wipe started -------------------------------------------------
+    wipe_results = [r for r in results if not r.fight.get("kill") and r.deaths]
+    if wipe_results:
+        out += [Line(""), Line("  How each wipe started:", "info")]
+        for r in wipe_results:
+            d0 = r.deaths[0]
+            pct = r.fight.get("bossPercentage")
+            pct = f" at {pct:.1f}%" if pct is not None else ""
+            out.append(Line(f"    {r.fight['name']} #{r.pull_number}{pct} - {d0['player']} to {d0['ability']} at {fmt_time(d0['t'])}"))
+
+    # --- players ----------------------------------------------------------------
+    players = defaultdict(lambda: {"deaths": 0, "first": 0, "early": 0, "on_kill": 0, "unpressed": 0, "hits": 0, "amount": 0, "mech": 0})
+    unpressed_names = Counter()
+    for r in results:
+        for i, d in enumerate(r.deaths):
+            p = players[d["player"]]
+            p["deaths"] += 1
+            if i == 0:
+                p["first"] += 1
+            if i < 3:
+                p["early"] += 1
+            if r.fight.get("kill"):
+                p["on_kill"] += 1
+        for name, defs_ready in r.unpressed.items():
+            players[name]["unpressed"] += 1
+            unpressed_names.update(defs_ready)
+        for name, a in r.avoidable.items():
+            players[name]["hits"] += a["hits"]
+            players[name]["amount"] += a["amount"]
+        for name, n in r.mech_fails.items():
+            players[name]["mech"] += n
+
+    # Every wipe ends with everyone dead, so plain death counts don't rank anyone;
+    # dying first or early, dying on a kill, and avoidable mistakes do.
+    def score(p):
+        return p["first"] * 3 + p["early"] * 2 + p["on_kill"] * 2 + p["unpressed"] * 2 + p["mech"] * 2 + p["hits"]
+
+    ranked = sorted(((n, p) for n, p in players.items() if score(p)), key=lambda kv: -score(kv[1]))
+    out += [Line(""), Line(f"  Players (most to fix first, {len(ranked)} of {len(players)} with something to look at):", "info")]
+    for name, p in ranked[:12]:
+        parts = [f"{p['deaths']} death{'s' if p['deaths'] != 1 else ''}"]
+        if p["first"]:
+            parts.append(f"died first {p['first']}x")
+        if p["early"] > p["first"]:
+            parts.append(f"in the first 3 deaths {p['early']}x")
+        if p["on_kill"]:
+            parts.append(f"died on a kill {p['on_kill']}x")
+        if p["unpressed"]:
+            parts.append(f"died with a defensive unpressed {p['unpressed']}x")
+        if p["hits"]:
+            parts.append(f"{p['hits']} avoidable hit{'s' if p['hits'] != 1 else ''} ({fmt_amount(p['amount'])})")
+        if p["mech"]:
+            parts.append(f"missed {p['mech']} mechanic{'s' if p['mech'] != 1 else ''}")
+        tag = "warn" if p["first"] >= 2 or p["unpressed"] >= 2 or p["mech"] >= 2 else "normal"
+        out.append(Line(f"    {name} - {', '.join(parts)}", tag))
+    if len(ranked) > 12:
+        out.append(Line(f"    ...and {len(ranked) - 12} more with smaller issues.", "dim"))
+
+    if unpressed_names:
+        out += [Line(""), Line("  Defensives most often left unpressed:", "info"),
+                Line("    " + ", ".join(f"{n} x{c}" for n, c in unpressed_names.most_common(8)), "warn")]
+
+    out.append(Line(""))
+    notes = [f"Defensive checks cover the first {detail_deaths} deaths of each pull and skip one-shots."]
+    if not include_kills:
+        notes.append("Only wipes were reviewed - turn on Include kills to count deaths on kills too.")
+    out.append(Line("  " + " ".join(notes), "dim"))
     return out
 
 

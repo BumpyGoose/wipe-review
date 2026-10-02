@@ -19,6 +19,41 @@ def save_review(code, lines):
         fh.write("\n".join(l.text for l in lines) + "\n")
 
 
+class ReportRun(threading.Thread):
+    """Reviews every boss pull of a report (finished or still being logged),
+    then builds the evening summary. on_pull(PullResult) gets each pull in
+    order, on_summary(list[Line]) the summary, on_status(str) progress, and
+    on_stopped(error | None) fires once at the end."""
+
+    def __init__(self, code, on_pull, on_summary, on_status, on_stopped, *, include_kills=True, detail_deaths=8):
+        super().__init__(daemon=True)
+        self.code = code
+        self.on_pull, self.on_summary, self.on_status, self.on_stopped = on_pull, on_summary, on_status, on_stopped
+        self.include_kills = include_kills
+        self.detail_deaths = detail_deaths
+        self._stop_event = threading.Event()
+        self.client = WclClient()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        error = None
+        try:
+            self.on_status("Loading report...")
+            report, results = analysis.analyze_report(
+                self.client, self.code, self.include_kills, self.detail_deaths,
+                on_progress=lambda done, total, f: self.on_status(f"Reviewed {done}/{total} pulls - {f['name']}"),
+                on_result=self.on_pull, should_stop=self._stop_event.is_set)
+            if not self._stop_event.is_set():
+                summary = analysis.summarize_report(report, results, self.include_kills, self.detail_deaths)
+                save_review(self.code, summary + [l for r in results for l in r.lines])
+                self.on_summary(summary)
+        except Exception as e:
+            error = str(e)
+        self.on_stopped(error)
+
+
 class LiveWatcher(threading.Thread):
     """on_lines(list[Line]) gets each review; on_status(str) gets a one-line
     status after every poll; on_stopped(str | None) fires once at the end

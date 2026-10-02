@@ -1,6 +1,6 @@
-"""Wipe Review - a small window: paste the raid's live log URL at the top,
-press Start, and each pull's review appears as a result card a few seconds
-after the pull ends.
+"""Wipe Review - a small window: paste a Warcraft Logs report URL at the top,
+then either Watch live (each pull is reviewed a few seconds after it ends) or
+run a Full report (every pull in the report plus a summary of the evening).
 
 Run with:  python app.py   (or pythonw app.py for no console window)
 """
@@ -15,7 +15,7 @@ from tkinter import font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 
 from wipe_review import analysis, wcl
-from wipe_review.watcher import LiveWatcher
+from wipe_review.watcher import LiveWatcher, ReportRun
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "settings.local.json"
 PLACEHOLDER = "https://www.warcraftlogs.com/reports/..."
@@ -68,20 +68,54 @@ class FlatButton(tk.Label):
         kw.setdefault("padx", 16)
         kw.setdefault("pady", 6)
         super().__init__(master, text=text, bg=bg, fg=fg, cursor="hand2", **kw)
-        self.command, self.base, self.hover = command, bg, hover
-        self.bind("<Button-1>", lambda e: self.command(e))
-        self.bind("<Enter>", lambda _e: self.configure(bg=self.hover))
-        self.bind("<Leave>", lambda _e: self.configure(bg=self.base))
+        self.command, self.base, self.hover, self.fg = command, bg, hover, fg
+        self.enabled = True
+        self.bind("<Button-1>", lambda e: self.enabled and self.command(e))
+        self.bind("<Enter>", lambda _e: self.enabled and self.configure(bg=self.hover))
+        self.bind("<Leave>", lambda _e: self.enabled and self.configure(bg=self.base))
 
-    def restyle(self, text, bg, hover):
+    def restyle(self, text, bg, hover, fg=None):
         self.base, self.hover = bg, hover
-        self.configure(text=text, bg=bg)
+        self.fg = fg or self.fg
+        self.configure(text=text, bg=bg, fg=self.fg)
+
+    def set_enabled(self, enabled):
+        self.enabled = enabled
+        if enabled:
+            self.configure(bg=self.base, fg=self.fg, cursor="hand2")
+        else:
+            self.configure(bg=BG_DARK, fg=MUTED, cursor="arrow")
+
+
+class FlowFrame(tk.Frame):
+    """Lays its children out left to right, wrapping onto new rows to fit
+    the width (stat chips)."""
+
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        self._width = None
+        self.bind("<Configure>", self._reflow)
+
+    def _reflow(self, e=None):
+        width = self.winfo_width()
+        if width <= 1 or width == self._width:
+            return
+        self._width = width
+        row = col = x = 0
+        for w in self.winfo_children():
+            w_width = w.winfo_reqwidth() + 6
+            if x and x + w_width > width:
+                row, col, x = row + 1, 0, 0
+            w.grid(row=row, column=col, sticky="w", padx=(0, 6), pady=(0, 4))
+            col, x = col + 1, x + w_width
 
 
 class App:
     def __init__(self, root):
         self.root = root
-        self.watcher = None
+        self.worker = None           # LiveWatcher or ReportRun while one is running
+        self.mode = None             # "live" / "report" while running
+        self.report_anchor = None    # where a full report's summary card goes
         self.events = queue.Queue()  # (kind, payload) from the watcher thread
         self.texts = []              # Text widgets, re-fitted when the width changes
         self._refit_pending = None
@@ -109,8 +143,9 @@ class App:
         self._build_results()
         self._build_statusbar()
 
-        self.note("Paste the Warcraft Logs link of the report your raid is **live-logging** and press **Start**. "
-                  "Each pull is reviewed here a few seconds after it ends.")
+        self.note("Paste a Warcraft Logs report link, then **Watch live** while your raid is logging (each pull is "
+                  "reviewed a few seconds after it ends), or **Full report** for every pull of a report plus a summary "
+                  "of the evening.")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(150, self.drain_events)
 
@@ -132,7 +167,7 @@ class App:
         self.entry = tk.Entry(field, bg=INPUT, fg=TEXT, insertbackground=TEXT, relief="flat", font=self.font,
                               highlightthickness=0, bd=0, disabledbackground=INPUT, disabledforeground=MUTED)
         self.entry.pack(side="left", fill="x", expand=True, ipady=7, padx=(0, 10))
-        self.entry.bind("<Return>", lambda _e: self.toggle())
+        self.entry.bind("<Return>", lambda _e: self.toggle("live"))
         self.entry.bind("<FocusIn>", self._clear_placeholder)
         self.entry.bind("<FocusOut>", self._show_placeholder)
         if url:
@@ -140,8 +175,12 @@ class App:
         else:
             self._show_placeholder()
 
-        self.button = FlatButton(row, "Start", lambda _e: self.toggle(), BLURPLE, BLURPLE_HOVER, font=self.font_bold, width=6)
-        self.button.pack(side="left", padx=(8, 0), fill="y")
+        self.live_btn = FlatButton(row, "Watch live", lambda _e: self.toggle("live"), BLURPLE, BLURPLE_HOVER,
+                                   font=self.font_bold, width=9)
+        self.live_btn.pack(side="left", padx=(8, 0), fill="y")
+        self.report_btn = FlatButton(row, "Full report", lambda _e: self.toggle("report"), INPUT, INPUT_HOVER,
+                                     fg=TEXT, font=self.font_bold, width=9)
+        self.report_btn.pack(side="left", padx=(8, 0), fill="y")
         gear = FlatButton(row, "⚙", lambda e: self._options_menu().tk_popup(e.x_root, e.y_root), INPUT, INPUT_HOVER,
                           fg=TEXT, font=(self.f_base, 12), padx=10, pady=0)
         gear.pack(side="left", padx=(8, 0), fill="y")
@@ -279,35 +318,59 @@ class App:
         t.pack(side="left", fill="x", expand=True, padx=(6, 0))
         self.texts.append(t)
         self._schedule_refit(stick)
+        return row
 
-    def card(self, kind, title, stats, lines):
-        """A result card for one pull: WIPE/KILL badge, title, stat chips, review body."""
-        stick = self._at_bottom()
+    def card(self, kind, title, stats, lines, collapsed=False, after=None, when=None):
+        """A result card: badge, title, stat chips, then the review body.
+        Clicking the header folds the body away."""
+        stick = self._at_bottom() and after is None
         card = tk.Frame(self.feed, bg=BG_DARK)
-        card.pack(fill="x", padx=16, pady=6)
+        if after is not None:
+            card.pack(fill="x", padx=16, pady=6, after=after)
+        else:
+            card.pack(fill="x", padx=16, pady=6)
         inner = tk.Frame(card, bg=BG_DARK)
         inner.pack(fill="x", padx=14, pady=12)
 
-        head = tk.Frame(inner, bg=BG_DARK)
+        head = tk.Frame(inner, bg=BG_DARK, cursor="hand2")
         head.pack(fill="x")
-        tk.Label(head, text=kind, bg=GREEN if kind == "KILL" else RED, fg=WHITE, font=(self.f_base, 8, "bold"),
-                 padx=7, pady=1).pack(side="left")
+        badge_bg = {"KILL": GREEN, "WIPE": RED}.get(kind, BLURPLE)
+        arrow = tk.Label(head, bg=BG_DARK, fg=TEXT, font=(self.f_base, 12), width=2, anchor="w")
+        arrow.pack(side="left")
+        tk.Label(head, text=kind, bg=badge_bg, fg=WHITE, font=(self.f_base, 8, "bold"), padx=7, pady=1).pack(side="left")
         tk.Label(head, text=title, bg=BG_DARK, fg=WHITE, font=self.font_title).pack(side="left", padx=(10, 0))
-        tk.Label(head, text=f"{datetime.now():%H:%M}", bg=BG_DARK, fg=MUTED, font=self.font_small).pack(side="right")
+        when = f"{datetime.now():%H:%M}" if when is None else when
+        if when:
+            tk.Label(head, text=when, bg=BG_DARK, fg=MUTED, font=self.font_small).pack(side="right")
 
         if stats:
-            chips = tk.Frame(inner, bg=BG_DARK)
-            chips.pack(fill="x", pady=(8, 2))
+            chips = FlowFrame(inner, bg=BG_DARK)
+            chips.pack(fill="x", pady=(8, 0))
             for s in stats:
-                tk.Label(chips, text=s, bg=INPUT, fg=TEXT, font=self.font_small, padx=8, pady=2).pack(side="left", padx=(0, 6))
+                tk.Label(chips, text=s, bg=INPUT, fg=TEXT, font=self.font_small, padx=8, pady=2)
 
-        tk.Frame(inner, bg=INPUT, height=1).pack(fill="x", pady=(8, 6))
-        t = self._rich_text(inner, BG_DARK)
+        body = tk.Frame(inner, bg=BG_DARK)
+        tk.Frame(body, bg=INPUT, height=1).pack(fill="x", pady=(4, 6))
+        t = self._rich_text(body, BG_DARK)
         self._render_review_lines(t, lines)
         t.configure(state="disabled")
         t.pack(fill="x")
         self.texts.append(t)
+
+        def set_open(open_):
+            arrow.configure(text="\u25be" if open_ else "\u25b8")
+            if open_:
+                body.pack(fill="x")
+            else:
+                body.pack_forget()
+            card._open = open_
+            self._schedule_refit()
+
+        for w in [head] + list(head.winfo_children()):
+            w.bind("<Button-1>", lambda _e: set_open(not card._open))
+        set_open(not collapsed)
         self._schedule_refit(stick)
+        return card
 
     def _render_review_lines(self, t, lines):
         """Review lines -> card body: indentation becomes margins (so wrapped
@@ -337,21 +400,29 @@ class App:
             else:
                 t.insert("end", txt, (line.tag, margin))
 
-    def show_review(self, lines):
+    def show_review(self, lines, collapsed=False, after=None, when=None):
         lines = list(lines)
         while lines and not lines[0].text.strip():
             lines.pop(0)
         if not lines:
-            return
-        # "=== WIPE - Ula'tek Heroic pull #1 | 3:50 | boss 42.5% | phase 2 | 27 players ==="
+            return None
+        # "=== WIPE - Ula'tek Heroic pull #1 | 3:50 | boss 42.5% | phase 2 | 27 players | 28 deaths ==="
         parts = lines[0].text.strip(" =").split(" | ")
         kind, _, title = parts[0].partition(" - ")
-        self.card(kind, title, parts[1:], lines[1:])
+        return self.card(kind, title, parts[1:], lines[1:], collapsed=collapsed, after=after, when=when)
+
+    def _scroll_to(self, widget):
+        def go():
+            self._refit_all()
+            total = max(1, self.feed.winfo_reqheight())
+            self.canvas.yview_moveto(max(0, widget.winfo_y() - 8) / total)
+        self.root.after(120, go)
 
     def clear(self):
         for w in self.feed.winfo_children()[1:]:  # keep the top spacer
             w.destroy()
         self.texts.clear()
+        self.report_anchor = None
         self._schedule_refit()
         self.canvas.yview_moveto(0)
 
@@ -365,17 +436,29 @@ class App:
                     else:
                         for l in payload:
                             self.note(l.text, l.tag)
+                elif kind == "pull":
+                    when = f"{datetime.fromtimestamp(payload.started_at / 1000):%H:%M}" if payload.started_at else ""
+                    self.show_review(payload.lines, collapsed=True, when=when)
+                elif kind == "summary":
+                    anchor = self.report_anchor if self.report_anchor and self.report_anchor.winfo_exists() else None
+                    card = self.show_review(payload, after=anchor, when="")
+                    if card is not None:
+                        self._scroll_to(card)
                 elif kind == "status":
-                    self.set_status(payload, "busy" if payload.startswith("Reviewing") else "live")
+                    busy = payload.startswith(("Reviewing", "Reviewed", "Loading"))
+                    self.set_status(payload, "busy" if busy else "live")
                 elif kind == "stopped":
-                    self.watcher = None
-                    self._set_running(False)
+                    finished_report = self.mode == "report" and not payload
+                    self.worker, self.mode = None, None
+                    self._set_running(None)
                     if payload:
                         self.set_status("Stopped - error", "error")
                         self.note(f"**Stopped:** {payload}", "bad")
+                    elif finished_report:
+                        self.set_status("Report done - summary at the top, click a pull to expand it", "idle")
                     else:
                         self.set_status("Idle", "idle")
-                        self.note("Stopped watching.")
+                        self.note("Stopped.")
         except queue.Empty:
             pass
         self.root.after(150, self.drain_events)
@@ -385,18 +468,23 @@ class App:
         save_settings({"url": self._url(), "include_kills": self.include_kills.get(), "review_existing": self.review_existing.get(),
                        "detail_deaths": int(self.detail_deaths.get()), "on_top": self.on_top.get()})
 
-    def _set_running(self, running):
-        if running:
-            self.button.restyle("Stop", RED, RED_HOVER)
-            self.entry.configure(state="disabled")
-        else:
-            self.button.restyle("Start", BLURPLE, BLURPLE_HOVER)
-            self.entry.configure(state="normal")
+    def _set_running(self, mode):
+        """mode: "live" / "report" while running, None when idle."""
+        self.live_btn.restyle("Watch live", BLURPLE, BLURPLE_HOVER, WHITE)
+        self.report_btn.restyle("Full report", INPUT, INPUT_HOVER, TEXT)
+        self.live_btn.set_enabled(mode in (None, "live"))
+        self.report_btn.set_enabled(mode in (None, "report"))
+        if mode == "live":
+            self.live_btn.restyle("Stop", RED, RED_HOVER, WHITE)
+        elif mode == "report":
+            self.report_btn.restyle("Stop", RED, RED_HOVER, WHITE)
+        self.entry.configure(state="normal" if mode is None else "disabled")
 
-    def toggle(self):
-        if self.watcher:
-            self.watcher.stop()
-            self.set_status("Stopping...", "busy")
+    def toggle(self, mode):
+        if self.worker:
+            if mode == self.mode:
+                self.worker.stop()
+                self.set_status("Stopping...", "busy")
             return
 
         code = analysis.report_code(self._url())
@@ -408,19 +496,24 @@ class App:
             return
         self._save()
 
-        self.note(f"Watching report **{code}**.")
-        self.set_status(f"Connecting to {code}...", "busy")
-        self.watcher = LiveWatcher(
-            code,
-            on_lines=lambda lines: self.events.put(("lines", lines)),
-            on_status=lambda s: self.events.put(("status", s)),
-            on_stopped=lambda err: self.events.put(("stopped", err)),
-            include_kills=self.include_kills.get(),
-            review_existing=self.review_existing.get(),
-            detail_deaths=int(self.detail_deaths.get()),
-        )
-        self.watcher.start()
-        self._set_running(True)
+        status = lambda s: self.events.put(("status", s))
+        stopped = lambda err: self.events.put(("stopped", err))
+        if mode == "live":
+            self.note(f"Watching report **{code}** live.")
+            self.set_status(f"Connecting to {code}...", "busy")
+            self.worker = LiveWatcher(code, on_lines=lambda lines: self.events.put(("lines", lines)),
+                                      on_status=status, on_stopped=stopped,
+                                      include_kills=self.include_kills.get(), review_existing=self.review_existing.get(),
+                                      detail_deaths=int(self.detail_deaths.get()))
+        else:
+            self.report_anchor = self.note(f"Full report for **{code}** - reviewing every pull, then summarising the evening.")
+            self.worker = ReportRun(code, on_pull=lambda r: self.events.put(("pull", r)),
+                                    on_summary=lambda lines: self.events.put(("summary", lines)),
+                                    on_status=status, on_stopped=stopped,
+                                    include_kills=self.include_kills.get(), detail_deaths=int(self.detail_deaths.get()))
+        self.mode = mode
+        self.worker.start()
+        self._set_running(mode)
 
     def ensure_credentials(self):
         try:
@@ -441,8 +534,8 @@ class App:
         return True
 
     def on_close(self):
-        if self.watcher:
-            self.watcher.stop()
+        if self.worker:
+            self.worker.stop()
         self.root.destroy()
 
 
