@@ -1,0 +1,4 @@
+*.local.json
+reviews/
+*.bak
+__pycache__/
